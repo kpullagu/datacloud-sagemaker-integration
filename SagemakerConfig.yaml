@@ -1,0 +1,1153 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  This template creates studio lifecycle config and associated the lifecycle config to the studio domain. 
+  This template creates an Amazon EC2 Linux instance to execute scripts, and then terminates the instance.
+
+Metadata:
+  cfn-lint:
+    config:
+      ignore_checks:
+        - W9006
+        - E9101
+  QuickStartDocumentation:
+    EntrypointName: "Parameters for deploying the Prerequisites for integrating SageMaker with Data Cloud"
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: SageMaker Domain and User Profile
+        Parameters:
+          - DomainName
+          - UserProfileName      
+      - Label:
+          default: Salesforce connected App
+        Parameters:
+          - ConnectedAppName
+          - EmailId
+      - Label:
+          default: OAuth Secrets in AWS Secrets Manager
+        Parameters:
+          - SalesforceOAuthSecretName
+          - SalesforceDomaiName
+          - ClientId
+          - ConsumerSecret
+
+      - Label:
+          default: AWS Quick Start configuration
+        Parameters:
+          - QSS3BucketName
+          - QSS3KeyPrefix
+          - QSS3BucketRegion
+    ParameterLabels:
+      DomainName:
+        default: SageMaker Domain Name
+      UserProfileName:
+        default: The user profile name for the SageMaker        
+      ConnectedAppName:
+        default: Connected App Name
+      EmailId:
+        default: Email ID
+      SalesforceOAuthSecretName:
+        default: Salesforce OAuth SecretName stored in AWS Secrets Manager
+      SalesforceDomainName:
+        default: SalesforceDomainName (Navigate to Salesforce--> Setup --> MyDomain and enter My Domain Name Value)
+      ClientId:
+        default: Client ID
+      ConsumerSecret:
+        default: Consumer Secret
+      # PrivateSubnet1ID:
+      #   default: Private subnet 1 ID
+      # IAMRole:
+      #   default: IAM role
+      # SecurityGroup:
+      #   default: EC2 security group        
+      QSS3BucketName:
+        default: Quick Start S3 bucket name
+      QSS3BucketRegion:
+        default: Quick Start S3 bucket Region
+      QSS3KeyPrefix:
+        default: Quick Start S3 key prefix
+
+Parameters:
+  DomainName:
+    Description: SageMaker Domain Name.
+    Type: String
+    Default: 'StudioDomain'
+  UserProfileName:
+    Description: The user profile name for the SageMaker.
+    Type: String
+    Default: 'studio-user'
+  ConnectedAppName:
+    Description: Conected App Name.
+    Type: String
+  EmailId:
+    Description: Email ID.
+    Type: String
+  SalesforceOAuthSecretName:
+    Description: Salesforce OAuth SecretName
+    Type: String    
+  SalesforceDomainName:
+    Description: Salesforce Domain Name.
+    Type: String
+  ClientId:
+    Description: Client ID.
+    Type: String
+    NoEcho: "true"    
+  ConsumerSecret:
+    Description: Consumer Secret.
+    Type: String
+    NoEcho: "true"
+
+  # PrivateSubnet1ID:
+  #   Description: ID of the private subnet in Availability Zone 1 (e.g., subnet-a0246dcd).
+  #   Type: AWS::EC2::Subnet::Id
+  QSS3BucketName:
+    AllowedPattern: ^[0-9a-z]+([0-9a-z-\.]*[0-9a-z])*$
+    ConstraintDescription: >-
+      The S3 bucket name can include numbers, lowercase letters, 
+      and hyphens (-), but it cannot start or end with a hyphen.
+    Default: aws-quickstart
+    Description: >-
+      Name of the S3 bucket for your copy of the deployment assets. Keep the default
+      name unless you are customizing the template. Changing the name updates code 
+      references to point to a new location.
+    MinLength: 3
+    MaxLength: 63 
+    Type: String
+  QSS3BucketRegion:
+    Default: us-east-2
+    Description: >-
+      AWS Region where the S3 bucket (QSS3BucketName) is hosted. Keep 
+      the default Region unless you are customizing the template. Changing the Region 
+      updates code references to point to a new location. When using your own bucket, 
+      specify the Region.
+    Type: String
+  QSS3KeyPrefix:
+    AllowedPattern: ^([0-9a-zA-Z!-_\.\*'\(\)/]+/)*$
+    ConstraintDescription: >-
+      The S3 key prefix can include numbers, lowercase letters, uppercase letters, 
+      hyphens (-), underscores (_), periods (.), asterisks (*), single quotes ('),
+      open parenthesis ((), close parenthesis ()), and forward slashes (/). End the
+      prefix with a forward slash.
+    Default: quickstart-sagemaker-datacloud/
+    Description: >-
+      S3 key prefix that is used to simulate a folder for your copy of the 
+      deployment assets. Keep the default prefix unless you are customizing 
+      the template. Changing the prefix updates code references to point to 
+      a new location.
+    Type: String
+
+Mappings: 
+  RegionMap: 
+    us-east-1: 
+      datascience: "arn:aws:sagemaker:us-east-1:081325390199:image/jupyter-server-3"
+      datawrangler: "arn:aws:sagemaker:us-east-1:663277389841:image/sagemaker-data-wrangler-1.0"
+    us-east-2:
+      datascience: "arn:aws:sagemaker:us-east-2:429704687514:image/jupyter-server-3"
+      datawrangler: "arn:aws:sagemaker:us-east-2:415577184552:image/sagemaker-data-wrangler-1.0"      
+    us-west-1: 
+      datascience: "arn:aws:sagemaker:us-west-1:742091327244:image/jupyter-server-3"
+      datawrangler: "arn:aws:sagemaker:us-west-1:926135532090:image/sagemaker-data-wrangler-1.0"
+
+Conditions:
+  UsingDefaultBucket: !Equals [!Ref QSS3BucketName, 'aws-quickstart']
+  CreateSalesforceOAuthSecret: !Not [!And  [!Equals [!Ref SalesforceDomainName, ""], !Equals [!Ref ClientId, ""], !Equals [!Ref ConsumerSecret, ""]]]
+      
+Resources:
+
+  LambdaExecutionRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - "sts:AssumeRole"
+      Path: /
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/AmazonEC2ReadOnlyAccess'
+        - 'arn:aws:iam::aws:policy/AmazonS3FullAccess'
+        - 'arn:aws:iam::aws:policy/IAMFullAccess'
+        - 'arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+
+  SageMakerExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Policies:
+        - PolicyName: datawrangler-secretmanageraccess
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - 
+                Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                  - secretsmanager:PutSecretValue
+                  - secretsmanager:DescribeSecret                  
+                Resource: 'arn:aws:secretsmanager:*:*:secret:*'
+                Condition:
+                  ForAnyValue:StringLike:
+                    'aws:ResourceTag/Salesforce': '*' 
+              - 
+                Effect: Allow
+                Action:
+                  - secretsmanager:UpdateSecret
+                Resource: 'arn:aws:secretsmanager:*:*:secret:AmazonSageMaker-*'                                          
+        - PolicyName: iam-access
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - 
+                Effect: Allow
+                Action:
+                  - iam:GetRole
+                  - iam:GetRolePolicy
+                Resource: '*'
+        - PolicyName: pass-role
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - 
+                Effect: Allow
+                Action:
+                  - iam:PassRole
+                Resource: 'arn:aws:iam::*:role/*'
+                Condition:
+                  StringLike:
+                    iam:PassedToService:
+                      - sagemaker.amazonaws.com
+                      - events.amazonaws.com
+        - PolicyName: kms-access
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - 
+                Effect: Allow
+                Action:
+                  - kms:CreateKey
+                  - kms:Get*
+                  - kms:List*
+                Resource: '*'
+        - PolicyName: list-tags
+          PolicyDocument: 
+            Version: 2012-10-17
+            Statement:
+              -
+                Effect: Allow
+                Action:
+                  - sagemaker:ListTags
+                Resource: '*'
+        - PolicyName: headless-execution-permissions
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+            - 
+              Effect: Allow
+              Action:
+                - events:TagResource
+                - events:DeleteRule
+                - events:PutTargets
+                - events:DescribeRule
+                - events:PutRule
+                - events:RemoveTargets
+                - events:DisableRule
+                - events:EnableRule
+              Resource: "*"
+              Condition:
+                StringEquals:
+                  'aws:ResourceTag/sagemaker:is-scheduling-notebook-job': 'true'
+            -
+              Effect: Allow
+              Action: 
+                - s3:CreateBucket
+                - s3:PutBucketVersioning
+                - s3:PutEncryptionConfiguration
+              Resource: 'arn:aws:s3:::sagemaker-automated-execution-*'
+            - 
+              Effect: Allow
+              Action: 
+                - sagemaker:AddTags
+              Resource: 
+                - 'arn:aws:sagemaker:*:*:training-job/*'
+                - 'arn:aws:sagemaker:*:*:pipeline/*'
+            - 
+              Effect: Allow
+              Action: 
+                - ec2:CreateNetworkInterface
+                - ec2:CreateNetworkInterfacePermission
+                - ec2:CreateVpcEndpoint
+                - ec2:DeleteNetworkInterface
+                - ec2:DeleteNetworkInterfacePermission
+                - ec2:DescribeDhcpOptions
+                - ec2:DescribeNetworkInterfaces
+                - ec2:DescribeRouteTables
+                - ec2:DescribeSecurityGroups
+                - ec2:DescribeSubnets
+                - ec2:DescribeVpcEndpoints
+                - ec2:DescribeVpcs
+                - ecr:BatchCheckLayerAvailability
+                - ecr:BatchGetImage
+                - ecr:GetDownloadUrlForLayer
+                - ecr:GetAuthorizationToken
+                - s3:ListBucket
+                - s3:GetBucketLocation
+                - s3:GetEncryptionConfiguration
+                - s3:PutObject
+                - s3:DeleteObject
+                - s3:GetObject
+                - sagemaker:DescribeDomain
+                - sagemaker:UpdateDomain
+                - sagemaker:DescribeUserProfile
+                - sagemaker:DescribeSpace
+                - sagemaker:DescribeStudioLifecycleConfig
+                - sagemaker:DescribeImageVersion
+                - sagemaker:DescribeAppImageConfig
+                - sagemaker:CreateTrainingJob
+                - sagemaker:DescribeTrainingJob
+                - sagemaker:StopTrainingJob
+                - sagemaker:Search
+                - sagemaker:CreatePipeline
+                - sagemaker:DescribePipeline
+                - sagemaker:DeletePipeline
+                - sagemaker:StartPipelineExecution
+              Resource: "*"
+        - PolicyName: QSBucketAccess
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ec2:DescribeAddresses
+                Resource: '*'
+              - Effect: Allow
+                Action: ec2:AssociateAddress
+                Resource:
+                  - !Sub arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:elastic-ip/*
+                  - !Sub arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/*
+                  - !Sub arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:network-interface/*
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:DescribeLogGroups
+                  - logs:DescribeLogStreams
+                  - logs:GetLogEvents
+                  - logs:PutLogEvents
+                  - logs:PutMetricFilter
+                  - logs:PutRetentionPolicy
+                Resource: !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:*:*
+              - Effect: Allow
+                Action: s3:GetObject
+                Resource: !Sub
+                  - arn:${AWS::Partition}:s3:::${BucketName}/*
+                  - BucketName: !If [UsingDefaultBucket, !Sub '${QSS3BucketName}-${AWS::Region}', !Ref QSS3BucketName]              
+      AssumeRolePolicyDocument: 
+        Version: 2012-10-17
+        Statement:
+          - 
+            Effect: Allow
+            Principal: 
+              Service: 
+                - sagemaker.amazonaws.com
+                - events.amazonaws.com
+                - forecast.amazonaws.com
+                - !Sub ec2.${AWS::URLSuffix}
+
+            Action: 
+              - sts:AssumeRole
+          -
+            Effect: Allow
+            Principal: 
+              Service: 
+                - lambda.amazonaws.com
+            Action: 
+              - sts:AssumeRole
+              
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/AmazonSageMakerFullAccess'
+        - 'arn:aws:iam::aws:policy/AWSCloudFormationFullAccess'
+        - 'arn:aws:iam::aws:policy/AWSCodePipeline_FullAccess'
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/AmazonSageMakerPipelinesIntegrations"
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AmazonEC2RoleforSSM
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/CloudWatchAgentServerPolicy        
+
+  LambdaExecutionPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Path: /
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Sid: CloudWatchLogsPermissions
+            Effect: Allow
+            Action:
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource: !Sub "arn:${AWS::Partition}:logs:*:*:*"
+          - Sid: SageMakerDomainPermission
+            Effect: Allow
+            Action:
+              - sagemaker:ListDomains
+              - sagemaker:CreateDomain
+              - sagemaker:DescribeDomain
+              - sagemaker:DeleteDomain
+              - sagemaker:UpdateDomain
+              - sagemaker:ListUserProfiles
+              - sagemaker:CreateUserProfile
+              - sagemaker:UpdateUserProfile
+              - sagemaker:DeleteUserProfile
+              - sagemaker:DescribeUserProfile
+              - sagemaker:ListApps
+              - sagemaker:CreateApp
+              - sagemaker:DescribeApp
+              - sagemaker:DeleteApp
+              - sagemaker:UpdateApp
+            Resource:
+              - !Sub "arn:${AWS::Partition}:sagemaker:*:*:domain/*"
+              - !Sub "arn:${AWS::Partition}:sagemaker:*:*:user-profile/*"
+              - !Sub "arn:${AWS::Partition}:sagemaker:*:*:app/*"
+          - Sid: SageMakerProjectsPermission
+            Effect: Allow
+            Action:
+              - servicecatalog:AcceptPortfolioShare
+              - sagemaker:EnableSagemakerServicecatalogPortfolio
+              - sagemaker:DisableSagemakerServicecatalogPortfolio
+            Resource: '*'
+          - Sid: ServiceCatalogPermission
+            Effect: Allow
+            Action:
+              - servicecatalog:*
+            Resource: '*'
+          - Sid: SageMakerExecPassRole
+            Effect: Allow
+            Action:
+              - iam:PassRole
+            Resource: !GetAtt  SageMakerExecutionRole.Arn
+      Roles:
+        - !Ref  LambdaExecutionRole
+  # Adding a wait time after SageMakerExecutionRole creation
+  # this is due to https://t.corp.amazon.com/P45031666
+  DomainDeploymentDelay:
+    Type: 'Custom::Delay'
+    DependsOn: SageMakerExecutionRole
+    Properties:
+      ServiceToken: !GetAtt DelayLambda.Arn
+      TimeToWait: 300
+
+  DelayLambda:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Handler: "index.handler"
+      Timeout: 660
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Runtime: python3.7
+      Code:
+        ZipFile: |
+          import json
+          import cfnresponse
+          import time
+          def handler(event, context):
+            time_to_wait = int(event['ResourceProperties']['TimeToWait'])
+            print(f'Waiting for {time_to_wait} seconds')
+            time.sleep(time_to_wait)
+            print(f'Waiting finished')
+            cfnresponse.send(event, context, cfnresponse.SUCCESS, {},'')
+
+  DefaultVpcLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: CFGetDefaultVpcIdTut
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import cfnresponse
+          import logging
+          import traceback
+
+          ec2 = boto3.client('ec2')
+
+          def lambda_handler(event, context):     
+            try:         
+              if 'RequestType' in event and event['RequestType'] == 'Create':
+                  vpc_id = get_default_vpc_id()
+                  subnets =  get_subnets_for_vpc(vpc_id)
+                  securitygroups =  get_security_groups_for_vpc(vpc_id)
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {'VpcId': vpc_id , "Subnets" : subnets, "SecurityGroups" : securitygroups}, '')
+              else:
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {},'')
+            except:
+              logger.exception(f"CFGetDefaultVpcIdTut:failed :{traceback.format_exc()}")
+              cfnresponse.send(event, context, cfnresponse.FAILED, {})
+
+          def get_default_vpc_id():
+              vpcs = ec2.describe_vpcs(Filters=[{'Name': 'is-default', 'Values': ['true']}])
+              vpcs = vpcs['Vpcs']
+              vpc_id = vpcs[0]['VpcId']
+              return vpc_id
+
+
+          def get_subnets_for_vpc(vpcId):
+              response = ec2.describe_subnets(
+                  Filters=[
+                      {
+                          'Name': 'vpc-id',
+                          'Values': [vpcId]
+                      }
+                  ]
+              )
+              subnet_ids = []
+              for subnet in response['Subnets']:
+                  subnet_ids.append(subnet['SubnetId'])
+              return subnet_ids
+
+          def get_security_groups_for_vpc(vpcId):
+              response = ec2.describe_security_groups(
+                  Filters=[
+                      {
+                          'Name': 'vpc-id',
+                          'Values': [vpcId]
+                      },
+                      {
+                          'Name': 'group-name',
+                          'Values': ['default']
+                      }
+                  ]
+              )
+              security_groups_ids = []
+              for sg in response['SecurityGroups']:
+                  security_groups_ids.append(sg['GroupId'])
+              return security_groups_ids
+
+      Description: Return default VPC ID , Subnets and SecurityGroups
+      Handler: index.lambda_handler
+      MemorySize: 512
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Runtime: python3.7
+      Timeout: 5
+  DefaultVpcFinder:
+    Type: Custom::ResourceForFindingDefaultVpc
+    Properties:
+      ServiceToken: !GetAtt DefaultVpcLambda.Arn
+
+  StudioDomain:
+    Type: AWS::SageMaker::Domain
+    DependsOn: DomainDeploymentDelay
+    Properties: 
+      AppNetworkAccessType: PublicInternetOnly
+      AuthMode: IAM
+      DefaultUserSettings: 
+          ExecutionRole: !GetAtt SageMakerExecutionRole.Arn
+      DomainName: !Ref DomainName 
+      SubnetIds: !GetAtt DefaultVpcFinder.Subnets
+      VpcId: !GetAtt DefaultVpcFinder.VpcId
+
+  StudioUserProfile:
+    Type: AWS::SageMaker::UserProfile
+    Properties: 
+      DomainId: !GetAtt StudioDomain.DomainId
+      UserProfileName: !Ref UserProfileName
+      UserSettings:
+        ExecutionRole: !GetAtt SageMakerExecutionRole.Arn
+        JupyterServerAppSettings: 
+          DefaultResourceSpec: 
+            SageMakerImageArn: !FindInMap
+              - RegionMap
+              - !Ref 'AWS::Region'
+              - datascience
+
+
+### S3 Bucket similar to the one created by the create domain action in the UI
+  StudioBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Join
+        - "-"
+        - - "sagemaker-studio"
+          - !Select
+            - 0
+            - !Split
+              - "-"
+              - !Select
+                - 2
+                - !Split
+                  - "/"
+                  - !Ref "AWS::StackId"
+
+      
+  # Store Salesforce OAuth Secrets in Secrets Manager  
+  SalesforceOAuthSecret:
+    Type: AWS::SecretsManager::Secret
+    Condition: CreateSalesforceOAuthSecret
+    Properties:
+      Name: !Ref SalesforceOAuthSecretName
+      SecretString: !Sub '{ "identity_provider": "SALESFORCE", "authorization_url": "https://login.salesforce.com/services/oauth2/authorize", "token_url": "https://login.salesforce.com/services/oauth2/token", "client_id": "${ClientId}", "client_secret": "${ConsumerSecret}", "issue_url": "https://${SalesforceDomainName}.my.salesforce.com"}'
+      Tags: [{"Key":"Salesforce","Value":"DataCloud"}]
+
+  SSMAutomationRole:
+    Type: AWS::IAM::Role
+    Metadata:
+      cfn-lint:
+        config:
+          ignore_checks:
+            - EIAMPolicyWildcardResource
+            - EIAMPolicyActionWildcard
+      cfn_nag:
+        rules_to_suppress:
+          - id: F38
+            reason: "IAM * permissions are required to create managed IAM policies"
+          - id: W11
+            reason: "IAM * permissions are required to create managed IAM policies"
+    Properties:
+      Policies:
+        - PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Action:
+                  - s3:GetObject
+                Resource: !Sub
+                  - arn:${AWS::Partition}:s3:::${S3Bucket}/${QSS3KeyPrefix}*
+                  - S3Bucket: !If [UsingDefaultBucket, !Sub '${QSS3BucketName}-${AWS::Region}', !Ref QSS3BucketName]
+                Effect: Allow
+          PolicyName: aws-quick-start-s3-policy
+        - PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Action:
+                  - ssm:GetParameters
+                Resource: !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter//ami-amazon-linux/latest"
+                Effect: Allow
+          PolicyName: aws-quick-start-ssm-param-store-policy
+        - PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - cloudformation:SignalResource
+                Resource: !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AWS::StackName}/*'
+          PolicyName: aws-quick-start-cfn-signal-policy
+        - PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: !Sub 'arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret/*'
+          PolicyName: aws-quick-start-secrets-manager-policy
+        - PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - iam:CreateRole
+                  - iam:CreatePolicy
+                  - iam:PutRolePolicy
+                  - iam:getRolePolicy
+                  - iam:DetachRolePolicy
+                  - iam:AttachRolePolicy
+                  - iam:DeleteRolePolicy
+                  - iam:CreateInstanceProfile
+                  - iam:DeleteRole
+                  - iam:RemoveRoleFromInstanceProfile
+                  - iam:AddRoleToInstanceProfile
+                  - iam:DeleteInstanceProfile
+                  - iam:PassRole
+                  - iam:GetPolicy
+                  - iam:ListPolicyVersions
+                  - iam:DeletePolicy
+                Resource: '*'
+          PolicyName: aws-quick-start-create-role-policy
+      Path: /
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ssm.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/AmazonSSMFullAccess'
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/AWSCloudFormationFullAccess'
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/AmazonEC2FullAccess'
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/SecretsManagerReadWrite'
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/AmazonSageMakerFullAccess'
+
+  LambdaSSMRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Policies:
+        - PolicyDocument:
+           Version: '2012-10-17'
+           Statement:
+             - Effect: Allow
+               Action:
+                 - iam:PassRole
+               Resource: !GetAtt SSMAutomationRole.Arn
+          PolicyName: QS-SSM-PassRole
+      Path: /
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AmazonSSMAutomationRole'
+  SageMakerconfigSetup:
+    Type: AWS::SSM::Document
+    Properties:
+      DocumentType: Automation
+      Content:
+        schemaVersion: "0.3"
+        description: Set up SageMaker Config EC2 instance then terminate it after the installation is completed.
+        assumeRole: "{{AutomationAssumeRole}}"
+        parameters:
+          StackName:
+            description: "Stack name input for CFN resource signal."
+            type: "String"
+          QSS3BucketName:
+            description: "Name of the S3 bucket for your copy of the deployment assets. Keep the default name unless you are customizing the template. Changing the name updates code references to point to a new location."
+            type: "String"
+          QSS3BucketRegion:
+            default: "us-east-1"
+            description: "AWS Region where the S3 bucket (QSS3BucketName) is hosted. Keep the default Region unless you are customizing the template. Changing the Region updates code references to point to a new location. When using your own bucket, specify the Region."
+            type: "String"
+          QSS3KeyPrefix:
+            description: "S3 key prefix that is used to simulate a folder for your copy of the deployment assets. Keep the default prefix unless you are customizing the template. Changing the prefix updates code references to point to a new location."
+            type: "String"
+          PrivateSubnet1ID:
+            description: "ID for private subnet 1."
+            type: "String"
+          AutomationAssumeRole:
+            description: "(Optional) The ARN of the role that allows Automation to perform the actions on your behalf."
+            type: "String"
+          AWSRegion:
+            description: "AWS Region to use."
+            type: "String"
+          IAMRole:
+            description: "IAM role for the installer to use."
+            type: "String"            
+          SecurityGroup:
+            description: "Security group for the installer to use."
+            type: "String"
+          Region:
+            description: "AWS Region to use."
+            type: "String"
+            default: !Ref "AWS::Region"
+          DomainName:
+            description: SageMaker Domain Name.
+            type: "String"
+            default: 'StudioDomain'
+          UserProfileName:
+            description: The user profile name for the SageMaker.
+            type: "String"
+            default: 'studio-user'
+          ConnectedAppName:
+            description: Conected App Name.
+            type: "String"
+          EmailId:
+            description: Email ID.
+            type: "String"
+          SalesforceOAuthSecretName:
+            description: Salesforce OAuth SecretName.
+            type: "String"
+          SalesforceDomainName:
+            description: Salesforce Domain Name.
+            type: "String"
+          ClientId:
+            description: Client ID.
+            type: "String"
+          ConsumerSecret:
+            description: Consumer Secret.
+            type: "String"
+            
+        mainSteps:
+        - name:  CreateStack
+          action: aws:createStack
+          onFailure: "step:CFNSignalEnd"
+          inputs:
+            StackName: "SageMakeConfig"
+            Capabilities: [ "CAPABILITY_IAM" ]
+            TemplateBody: |
+              Description: "Config Sagemaker studio lifecycle."
+              Parameters:
+                LINUXBASE:
+                  Type: 'AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>'
+                  Default: '/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2'
+                QSS3BucketName:
+                  Type: "String"
+                  Default: "{{QSS3BucketName}}"
+                  Description: "Name of target S3 bucket."
+                QSS3BucketRegion:
+                  Default: "us-east-2"
+                  Description: "AWS Region where the S3 bucket (QSS3BucketName) is hosted. Keep the default Region unless you are customizing the template. Changing the Region updates code references to point to a new location. When using your own bucket, specify the Region."
+                  Type: "String"
+                QSS3KeyPrefix:
+                  Type: "String"
+                  Default: "{{QSS3KeyPrefix}}"
+                  Description: "Name of target S3 prefix."
+                Subnet:
+                  Description: "Subnet to deploy the EC2 instance."
+                  Default: "{{PrivateSubnet1ID}}"
+                  Type: "String"
+                IAMRole:
+                  Description: IAM role for the installer to use.
+                  Type: "String"
+                  Default: "{{IAMRole}}"                  
+                SecurityGroup:
+                  Description: Security group for the installer to use.
+                  Type: "AWS::EC2::SecurityGroup::Id"
+                  Default: "{{SecurityGroup}}"
+                DomainName:
+                  Description: SageMaker Domain Name.
+                  Type: "String"
+                  Default: "{{DomainName}}"
+                UserProfileName:
+                  Description: The user profile name for the SageMaker.
+                  Type: "String"
+                  Default: "{{UserProfileName}}"
+                ConnectedAppName:
+                  Description: Conected App Name.
+                  Type: "String"
+                  Default: "{{ConnectedAppName}}"
+                EmailId:
+                  Description: Email ID.
+                  Type: "String"
+                  Default: "{{EmailId}}"
+                SalesforceOAuthSecretName:
+                  Description: Salesforce OAuth SecretName.
+                  Type: "String"
+                  Default: "{{SalesforceOAuthSecretName}}"                  
+                SalesforceDomainName:
+                  Description: Salesforce Domain Name.
+                  Type: "String"
+                  Default: "{{SalesforceDomainName}}"
+                ClientId:
+                  Description: Client ID.
+                  Type: "String"
+                  NoEcho: "true"
+                  Default: "{{ClientId}}"
+                ConsumerSecret:
+                  Description: Consumer Secret.
+                  Type: "String"
+                  NoEcho: "true"
+                  Default: "{{ConsumerSecret}}"
+              Resources:
+                SageMakeConfigManagedS3Policy:
+                  Type: 'AWS::IAM::ManagedPolicy'
+                  Properties:
+                    PolicyDocument:
+                      Version: '2012-10-17'
+                      Statement:
+                        - Action:
+                            - s3:GetObject
+                            - s3:ListBucket
+                          Resource: '*'
+                          Effect: Allow
+                    Roles:
+                    - !Ref IAMRole
+                SageMakeConfigManagedSecretsManagerPolicy:
+                  Type: 'AWS::IAM::ManagedPolicy'
+                  Properties:
+                    PolicyDocument:
+                      Version: '2012-10-17'
+                      Statement:
+                        - Action:
+                            - secretsmanager:GetSecretValue
+                            - secretsmanager:CreateSecret
+                          Resource: '*'
+                          Effect: Allow
+                    Roles:
+                    - !Ref IAMRole             
+                SageMakeConfigManagedEc2Policy:
+                  Type: 'AWS::IAM::ManagedPolicy'
+                  Properties:
+                    PolicyDocument:
+                      Version: '2012-10-17'
+                      Statement:
+                        - Action:
+                            - cloudformation:*
+                            - ec2:DescribeSecurityGroups
+                            - ec2:DescribeSubnets
+                            - ec2:DescribeVpcs
+                            - ec2:DescribeAccountAttributes
+                            - ec2:DescribeAddresses
+                            - ec2:DescribeInternetGateways
+                          Resource: "*"
+                          Effect: Allow
+                    Roles:
+                    - !Ref IAMRole
+                IamInstanceProfile:
+                  Type: "AWS::IAM::InstanceProfile"
+                  Properties:
+                    Roles:
+                    - !Ref IAMRole
+                EC2Instance:
+                  Type: "AWS::EC2::Instance"
+                  Properties:
+                    ImageId: !Ref LINUXBASE
+                    InstanceType: "t3.micro"
+                    IamInstanceProfile: !Ref IamInstanceProfile
+                    SubnetId: !Ref Subnet
+                    SecurityGroupIds:
+                      - !Ref 'SecurityGroup'
+                    Tags:
+                    - Key: "Name"
+                      Value: "TempSageMakeConfigInstance"
+                    UserData:
+                      Fn::Base64: !Sub |
+                        #cloud-config
+                        repo_upgrade: none                     
+        - name: "getInstanceId"
+          action: aws:executeAwsApi
+          onFailure: "step:CFNSignalEnd"
+          inputs:
+            Service: ec2
+            Api: DescribeInstances
+            Filters:
+            - Name: "tag:Name"
+              Values: [ "TempSageMakeConfigInstance" ]
+            - Name: "instance-state-name"
+              Values: [ "running" ]
+          outputs:
+          - Name: InstanceId
+            Selector: "$.Reservations[0].Instances[0].InstanceId"
+            Type: String
+        - name: "DownloadAndRunSageMakeConfigScript"
+          action: "aws:runCommand"
+          onFailure: "step:signalfailure"
+          inputs:
+            DocumentName: "AWS-RunShellScript"
+            InstanceIds:
+              - "{{getInstanceId.InstanceId}}"
+            CloudWatchOutputConfig:
+              CloudWatchOutputEnabled: "true"
+              CloudWatchLogGroupName: !Sub '/aws/Quick_Start/${AWS::StackName}'
+            Parameters:
+              commands:
+                - sudo yum update -y awscli
+                - aws s3 cp --recursive s3://{{QSS3BucketName}}/{{QSS3KeyPrefix}}scripts/ /tmp/
+                - /bin/su - ec2-user -c 'cd /tmp && sh -x updateawscli.sh'
+                # - /bin/su - ec2-user -c 'cd /tmp && sh -x installsalesforcecli.sh'
+                - /bin/su - ec2-user -c 'cd /tmp && sh -x storesecret.sh {{Region}} {{SalesforceOAuthSecretName}}'
+                - /bin/su - ec2-user -c 'cd /tmp && sh -x lifecycle-config.sh {{Region}} {{DomainName}} {{UserProfileName}}'
+                               
+        - name: CFNSignalEnd
+          action: aws:branch
+          inputs:
+            Choices:
+            - NextStep: signalsuccess
+              Not:
+                Variable: "{{StackName}}"
+                StringEquals: ""
+            - NextStep: sleepend
+              Variable: "{{StackName}}"
+              StringEquals: ""
+        # If all steps complete successfully signals CFN of Success
+        - name: "signalsuccess"
+          action: "aws:executeAwsApi"
+          nextStep: "deleteStack"
+          inputs:
+            Service: cloudformation
+            Api: SignalResource
+            LogicalResourceId: "SSMWaitCondition"
+            StackName: "{{StackName}}"
+            Status: SUCCESS
+            UniqueId: "{{getInstanceId.InstanceId}}"
+        # If CFN Signl Not Needed this sleep ends work flow
+        - name: "sleepend"
+          action: "aws:sleep"
+          nextStep: "deleteStack"
+          inputs:
+            Duration: PT1S
+        # If any steps fails signals CFN of Failure
+        - name: "signalfailure"
+          action: "aws:executeAwsApi"
+          nextStep: "deleteStack"
+          inputs:
+            Service: cloudformation
+            Api: SignalResource
+            LogicalResourceId: "SSMWaitCondition"
+            StackName: "{{StackName}}"
+            Status: FAILURE
+            UniqueId: "{{getInstanceId.InstanceId}}"
+        - name: deleteStack
+          action: aws:deleteStack
+          isEnd: true
+          onFailure: Continue
+          inputs:
+            StackName: "SageMakeConfig"
+  LambdaSSMExecute:
+    Type: AWS::Lambda::Function
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W58
+            reason: "LambdaSSMRole has proper permissions via managed policy"
+    Properties:
+      Description: Executes SSM Automation Documents
+      Handler: index.handler
+      Runtime: python3.7
+      Role: !GetAtt LambdaSSMRole.Arn
+      Timeout: 900
+      Code:
+        ZipFile: |
+          def handler(event, context):
+              import cfnresponse
+              import boto3, os, json
+              from botocore.vendored import requests
+
+              ssm_cl = boto3.client('ssm')
+              ecr_cl = boto3.client('ecr')
+              req_type = event['RequestType']
+              print(event)
+
+              SUCCESS = "SUCCESS"
+              FAILED = "FAILED"
+
+              def start_ssmautomation(event):
+                  doc_name = event['ResourceProperties']['DocumentName']
+                  stack_name = event['ResourceProperties']['StackName']
+                  ssm_role = event['ResourceProperties']['AutomationAssumeRole']
+                  qs_bucket = event['ResourceProperties']['QSS3BucketName']
+                  qs_region = event['ResourceProperties']['QSS3BucketRegion']
+                  qs_bucket_prefix = event['ResourceProperties']['QSS3KeyPrefix']
+                  subnet_id = event['ResourceProperties']['PrivateSubnet1ID']
+                  aws_region = event['ResourceProperties']['AWSRegion']
+                  iam_role = event['ResourceProperties']['IAMRole']
+                  security_group = event['ResourceProperties']['SecurityGroup']
+                  domain_name = event['ResourceProperties']['DomainName']
+                  user_profilename = event['ResourceProperties']['UserProfileName']
+                  connected_appname = event['ResourceProperties']['ConnectedAppName']
+                  email_id = event['ResourceProperties']['EmailId']
+                  salesforce_oauth_secretname = event['ResourceProperties']['SalesforceOAuthSecretName']
+                  salesforce_domainname = event['ResourceProperties']['SalesforceDomainName']
+                  client_id = event['ResourceProperties']['ClientId']
+                  consumer_secret = event['ResourceProperties']['ConsumerSecret']
+                  
+                  if qs_bucket == "aws-quickstart":
+                    qs_bucket = "aws-quickstart-" + qs_region
+
+                  start_automation = ssm_cl.start_automation_execution(
+                      DocumentName= doc_name,
+                      Parameters={
+                          'StackName': [
+                              stack_name
+                          ],
+                          'AutomationAssumeRole': [
+                              ssm_role
+                          ],
+                          'QSS3BucketName': [
+                              qs_bucket
+                          ],
+                          'QSS3BucketRegion': [
+                              qs_region
+                          ],
+                          'QSS3KeyPrefix': [
+                              qs_bucket_prefix
+                          ],
+                          'PrivateSubnet1ID': [
+                              subnet_id
+                          ],
+                          'AWSRegion': [
+                              aws_region
+                          ],
+                          'IAMRole': [
+                              iam_role
+                          ],
+                          'SecurityGroup': [
+                              security_group
+                          ],
+                          'DomainName': [
+                              domain_name
+                          ],
+                          'UserProfileName': [
+                              user_profilename
+                          ],
+                          'ConnectedAppName': [
+                              connected_appname
+                          ],
+                          'EmailId': [
+                              email_id
+                          ],
+                          'SalesforceOAuthSecretName': [
+                              salesforce_oauth_secretname
+                          ],
+                          'SalesforceDomainName': [
+                              salesforce_domainname
+                          ],
+                          'ClientId': [
+                              client_id
+                          ],
+                          'ConsumerSecret': [
+                              consumer_secret
+                          ]                        
+                      },
+                  )
+
+                  cfnresponse.send(event, context, SUCCESS, start_automation, start_automation['AutomationExecutionId'])
+
+              def delete_image(event):
+                  cfnresponse.send(event, context, SUCCESS, event, "Deleted")
+
+              actions = {
+                  'Create': start_ssmautomation,
+                  'Delete': delete_image,
+                  'Update': start_ssmautomation
+              }
+
+              try:
+                  actions.get(req_type)(event)
+              except Exception as exc:
+                  error_msg = {'Error': '{}'.format(exc)}
+                  print(error_msg)
+                  cfnresponse.send(event, context, FAILED, error_msg)
+  ExecuteSSMAutomation:
+    Type: Custom::ExecuteSSMAutomation
+    DependsOn: 
+    - DomainDeploymentDelay
+    - StudioDomain
+    Properties:
+      ServiceToken: !GetAtt LambdaSSMExecute.Arn
+      DocumentName: !Ref SageMakerconfigSetup
+      StackName: !Ref AWS::StackName
+      QSS3BucketName: !Ref QSS3BucketName
+      QSS3BucketRegion: !Ref QSS3BucketRegion
+      QSS3KeyPrefix: !Ref QSS3KeyPrefix
+      AutomationAssumeRole: !GetAtt SSMAutomationRole.Arn
+      PrivateSubnet1ID: !Select [0, !GetAtt DefaultVpcFinder.Subnets]       
+      AWSRegion: !Ref 'AWS::Region'
+      IAMRole: !Ref 'SageMakerExecutionRole'
+      SecurityGroup: !Select [0, !GetAtt DefaultVpcFinder.SecurityGroups]
+      DomainName: !Ref 'DomainName'
+      UserProfileName: !Ref 'UserProfileName'
+      ConnectedAppName: !Ref 'ConnectedAppName'
+      EmailId: !Ref 'EmailId'
+      SalesforceOAuthSecretName: !Ref 'SalesforceOAuthSecretName'
+      SalesforceDomainName: !Ref 'SalesforceDomainName'
+      ClientId: !Ref 'ClientId'
+      ConsumerSecret: !Ref 'ConsumerSecret'                                          
+  SSMWaitHandle:
+    Type: AWS::CloudFormation::WaitConditionHandle
+  SSMWaitCondition:
+    Type: AWS::CloudFormation::WaitCondition
+    CreationPolicy:
+      ResourceSignal:
+        Timeout: PT60M
+        Count: 1
+    DependsOn:
+      - ExecuteSSMAutomation
+    Properties:
+      Handle:
+        Ref: "SSMWaitHandle"
+      Timeout: "3600"
+      Count: 1
